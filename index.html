@@ -409,77 +409,81 @@ function fmt(n){
   if(n>=1e3) return Math.round(n/1e3)+'K';
   return n.toLocaleString();
 }
+var GAMES=[
+  {place:'87551149137332', ids:{p:'gp',v:'gv',f:'gf'}, main:true},
+  {place:'125668358832092', ids:{p:'mp',v:'mv',f:'mf'}},
+  {place:'97251292899794', ids:{p:'sop',v:'sov',f:'sof'}},
+  {place:'108444643313341', ids:{p:'ncp',v:'ncv',f:'ncf'}}
+];
+
+async function getUniverseId(placeId){
+  var r=await fetch('https://apis.roproxy.com/universes/v1/places/'+placeId+'/universe');
+  if(!r.ok) throw new Error('universe lookup failed for '+placeId);
+  var j=await r.json();
+  if(!j || !j.universeId) throw new Error('no universeId for '+placeId);
+  return j.universeId;
+}
+
+function setStat(ids, g){
+  document.getElementById(ids.v).textContent=fmt(g.visits||0)+' visits';
+  document.getElementById(ids.p).textContent=(g.playing||0).toLocaleString()+' playing';
+  document.getElementById(ids.f).textContent=fmt(g.favoritedCount||0)+' favorites';
+}
+
+function setStatFailed(ids){
+  document.getElementById(ids.v).textContent='—';
+  document.getElementById(ids.p).textContent=(ids.p==='gp')?'View on Roblox':'—';
+  document.getElementById(ids.f).textContent='—';
+}
+
 async function loadStats(){
-  try{
-    var r=await fetch('https://apis.roproxy.com/universes/v1/places/87551149137332/universe');
-    if(!r.ok) throw 0;
-    var uid=(await r.json()).universeId;
-    var r2=await fetch('https://games.roproxy.com/v1/games?universeIds='+uid);
-    if(!r2.ok) throw 0;
-    var g=(await r2.json()).data[0];
-    var v=g.visits||0,p=g.playing||0,f=g.favoritedCount||0;
-    document.getElementById('gp').textContent=(p||0).toLocaleString()+' playing';
-    document.getElementById('gv').textContent=fmt(v)+' visits';
-    document.getElementById('gf').textContent=fmt(f)+' favorites';
+  var totalVisits=0, totalPlaying=0, totalFavs=0;
 
-    var totalVisits=v,totalPlaying=p>0?p:0,totalFavs=f||0;
+  // Step 1: resolve every place -> universe id (parallel, independently fault-tolerant)
+  var universeResults=await Promise.allSettled(GAMES.map(function(g){return getUniverseId(g.place)}));
 
-  try{
-    var rm=await fetch('https://apis.roproxy.com/universes/v1/places/125668358832092/universe');
-    if(rm.ok){
-      var uidm=(await rm.json()).universeId;
-      var rm2=await fetch('https://games.roproxy.com/v1/games?universeIds='+uidm);
-      if(rm2.ok){var gm=(await rm2.json()).data[0];if(gm){
-        totalVisits+=gm.visits||0;
-        totalPlaying+=(gm.playing||0);
-        document.getElementById('mv').textContent=fmt(gm.visits||0)+' visits';
-        document.getElementById('mp').textContent=(gm.playing||0).toLocaleString()+' playing';
-        document.getElementById('mf').textContent=fmt(gm.favoritedCount||0)+' favorites';
-        totalFavs+=(gm.favoritedCount||0);
-      }}
+  var validUniverseIds=[];
+  universeResults.forEach(function(res,i){
+    if(res.status==='fulfilled'){
+      validUniverseIds.push(res.value);
+    } else {
+      setStatFailed(GAMES[i].ids);
     }
-  }catch(e){document.getElementById('mv').textContent='—';document.getElementById('mp').textContent='—';}
+  });
 
-  try{
-    var rs=await fetch('https://apis.roproxy.com/universes/v1/places/97251292899794/universe');
-    if(rs.ok){
-      var uids=(await rs.json()).universeId;
-      var rs2=await fetch('https://games.roproxy.com/v1/games?universeIds='+uids);
-      if(rs2.ok){var gs=(await rs2.json()).data[0];if(gs){
-        totalVisits+=gs.visits||0;
-        totalPlaying+=(gs.playing||0);
-        document.getElementById('sov').textContent=fmt(gs.visits||0)+' visits';
-        document.getElementById('sop').textContent=(gs.playing||0).toLocaleString()+' playing';
-        document.getElementById('sof').textContent=fmt(gs.favoritedCount||0)+' favorites';
-        totalFavs+=(gs.favoritedCount||0);
-      }}
-    }
-  }catch(e){document.getElementById('sov').textContent='—';document.getElementById('sop').textContent='—';}
+  if(validUniverseIds.length===0){
+    ['sv','sp','sf'].forEach(function(id){document.getElementById(id).textContent='—'});
+    return;
+  }
 
+  // Step 2: single batched request for all valid universes (avoids per-game rate limiting)
   try{
-    var rn=await fetch('https://apis.roproxy.com/universes/v1/places/108444643313341/universe');
-    if(rn.ok){
-      var uidn=(await rn.json()).universeId;
-      var rn2=await fetch('https://games.roproxy.com/v1/games?universeIds='+uidn);
-      if(rn2.ok){var gn=(await rn2.json()).data[0];if(gn){
-        totalVisits+=gn.visits||0;
-        totalPlaying+=(gn.playing||0);
-        document.getElementById('ncv').textContent=fmt(gn.visits||0)+' visits';
-        document.getElementById('ncp').textContent=(gn.playing||0).toLocaleString()+' playing';
-        document.getElementById('ncf').textContent=fmt(gn.favoritedCount||0)+' favorites';
-        totalFavs+=(gn.favoritedCount||0);
-      }}
-    }
-  }catch(e){document.getElementById('ncv').textContent='—';document.getElementById('ncp').textContent='—';}
+    var gr=await fetch('https://games.roproxy.com/v1/games?universeIds='+validUniverseIds.join(','));
+    if(!gr.ok) throw new Error('games batch fetch failed');
+    var gjson=await gr.json();
+    var byUniverse={};
+    (gjson.data||[]).forEach(function(g){byUniverse[g.id]=g});
+
+    universeResults.forEach(function(res,i){
+      if(res.status!=='fulfilled') return;
+      var g=byUniverse[res.value];
+      var ids=GAMES[i].ids;
+      if(g){
+        setStat(ids,g);
+        totalVisits+=g.visits||0;
+        totalPlaying+=g.playing||0;
+        totalFavs+=g.favoritedCount||0;
+      } else {
+        setStatFailed(ids);
+      }
+    });
 
     document.getElementById('sv').textContent=fmt(totalVisits);
     document.getElementById('sp').textContent=totalPlaying>0?totalPlaying.toLocaleString():'0';
     document.getElementById('sf').textContent=fmt(totalFavs);
   }catch(e){
+    GAMES.forEach(function(g){setStatFailed(g.ids)});
     ['sv','sp','sf'].forEach(function(id){document.getElementById(id).textContent='—'});
-    document.getElementById('gp').textContent='View on Roblox';
-    document.getElementById('gv').textContent='—';
-    document.getElementById('gf').textContent='—';
   }
 }
 loadStats();
